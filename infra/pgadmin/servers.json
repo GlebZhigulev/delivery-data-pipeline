@@ -1,0 +1,31 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Airflow DB",
+      "Group": "Airflow",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "airflow",
+      "Username": "airflow",
+      "SSLMode": "prefer"
+    },
+    "2": {
+      "Name": "RAW DB",
+      "Group": "Data Warehouse",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "raw",
+      "Username": "admin",
+      "SSLMode": "prefer"
+    },
+    "3": {
+      "Name": "MARTS DB",
+      "Group": "Data Warehouse",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "marts",
+      "Username": "admin",
+      "SSLMode": "prefer"
+    }
+  }
+}

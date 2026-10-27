@@ -1,0 +1,40 @@
+CREATE TABLE IF NOT EXISTS mart_orders (
+    order_id INT PRIMARY KEY,
+    order_year INT NOT NULL,
+    order_month INT NOT NULL,
+    order_day INT NOT NULL,
+    order_date DATE NOT NULL,
+    city TEXT NOT NULL,
+    store_name TEXT NOT NULL,
+    store_id INT NOT NULL,
+    user_id INT NOT NULL,
+    turnover DECIMAL(12, 2) DEFAULT 0,
+    revenue DECIMAL(12, 2) DEFAULT 0,
+    expenses DECIMAL(12, 2) DEFAULT 0,
+    profit DECIMAL(12, 2) DEFAULT 0,
+    orders_created INT DEFAULT 1,orders_delivered INT DEFAULT 0,
+    orders_canceled INT DEFAULT 0,
+    orders_canceled_after_delivery INT DEFAULT 0,
+    orders_canceled_service_error INT DEFAULT 0,
+    courier_changed INT DEFAULT 0,
+    driver_ids INT[]
+);
+
+CREATE TABLE IF NOT EXISTS mart_items (
+    report_date DATE NOT NULL,
+    store_id INT NOT NULL,
+    item_id INT NOT NULL,
+    report_year INT NOT NULL,
+    report_month INT NOT NULL,
+    report_day INT NOT NULL,
+    city TEXT NOT NULL,
+    store_name TEXT NOT NULL,
+    category TEXT,
+    item TEXT NOT NULL,
+    turnover DECIMAL(12, 2) DEFAULT 0,
+    ordered_quantity INT DEFAULT 0,
+    canceled_quantity INT DEFAULT 0,
+    orders_with_item_count INT DEFAULT 0,
+    canceled_orders_with_item_count INT DEFAULT 0,
+    PRIMARY KEY (report_date, store_id, item_id)
+);

@@ -1,0 +1,123 @@
+# Run from infra/: docker compose up -d --build
+# Docker Compose automatically reads infra/.env from this directory.
+
+x-airflow-environment: &airflow-environment
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?Set AIRFLOW_DB_PASSWORD in infra/.env}@postgres:5432/airflow"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW_CONN_POSTGRES_RAW: "postgresql://admin:${DWH_DB_PASSWORD:?Set DWH_DB_PASSWORD in infra/.env}@postgres:5432/raw"
+  AIRFLOW_CONN_POSTGRES_MARTS: "postgresql://admin:${DWH_DB_PASSWORD:?Set DWH_DB_PASSWORD in infra/.env}@postgres:5432/marts"
+  AIRFLOW_CONN_SPARK_DEFAULT: "spark://local"
+  JAVA_HOME: /usr/lib/jvm/java-17
+  SPARK_HOME: /opt/spark
+  PYSPARK_PYTHON: python3
+  SPARK_LOCAL_IP: 127.0.0.1
+  PYTHONPATH: /opt/airflow
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  DWH_DB_USER: admin
+  DWH_DB_PASSWORD: "${DWH_DB_PASSWORD:?Set DWH_DB_PASSWORD in infra/.env}"
+  RAW_DB: raw
+  MARTS_DB: marts
+  AIRFLOW_ADMIN_USERNAME: "${AIRFLOW_ADMIN_USERNAME:-admin}"
+  AIRFLOW_ADMIN_PASSWORD: "${AIRFLOW_ADMIN_PASSWORD:?Set AIRFLOW_ADMIN_PASSWORD in infra/.env}"
+
+x-airflow-volumes: &airflow-volumes
+  - ./airflow/dags:/opt/airflow/dags
+  - ./airflow/logs:/opt/airflow/logs
+  - ./airflow/plugins:/opt/airflow/plugins
+  - ../spark:/opt/airflow/spark
+  - ../data:/opt/airflow/data
+  - ../db:/opt/airflow/db
+
+services:
+  postgres:
+    image: postgres:13-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}"
+      POSTGRES_DB: postgres
+      AIRFLOW_DB_PASSWORD: "${AIRFLOW_DB_PASSWORD:?Set AIRFLOW_DB_PASSWORD in infra/.env}"
+      DWH_DB_PASSWORD: "${DWH_DB_PASSWORD:?Set DWH_DB_PASSWORD in infra/.env}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init-db.sh:/docker-entrypoint-initdb.d/10-init-db.sh:ro
+      - ./postgres/init.sql:/opt/bootstrap/init.sql:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-init:
+    build:
+      context: ./airflow
+    container_name: airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *airflow-environment
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        airflow db migrate
+        airflow users create \
+          --username "$$AIRFLOW_ADMIN_USERNAME" \
+          --password "$$AIRFLOW_ADMIN_PASSWORD" \
+          --firstname Admin --lastname User --role Admin \
+          --email admin@example.com || true
+    restart: "no"
+
+  airflow-webserver:
+    build:
+      context: ./airflow
+    container_name: airflow-webserver
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-environment
+    volumes: *airflow-volumes
+    ports:
+      - "127.0.0.1:${AIRFLOW_HOST_PORT:-8080}:8080"
+    command: webserver
+    restart: unless-stopped
+
+  airflow-scheduler:
+    build:
+      context: ./airflow
+    container_name: airflow-scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-environment
+    volumes: *airflow-volumes
+    command: scheduler
+    restart: unless-stopped
+
+  pgadmin:
+    build:
+      context: ./pgadmin
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL:-admin@example.com}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_DEFAULT_PASSWORD:?Set PGADMIN_DEFAULT_PASSWORD in infra/.env}"
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "127.0.0.1:${PGADMIN_HOST_PORT:-5050}:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

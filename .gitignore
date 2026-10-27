@@ -426,3 +426,30 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Local data
+data/raw/*.parquet
+
+# Credentials
+infra/pgadmin/pgpass
+
+# Airflow runtime
+infra/airflow/logs/
+infra/airflow/plugins/__pycache__/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# IDE
+.vscode/
+.idea/
