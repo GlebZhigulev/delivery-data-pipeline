@@ -1,6 +1,8 @@
 import os
 
 import psycopg2
+from psycopg2 import sql
+from uuid import uuid4
 from pyspark.sql import DataFrame, SparkSession
 from airflow.operators.bash import BashOperator
 
@@ -85,7 +87,21 @@ def read_table(spark: SparkSession, database: str, table_name: str) -> DataFrame
     )
 
 
-def truncate_table(database: str, table_name: str) -> None:
+def write_table(df: DataFrame, database: str, table_name: str) -> None:
+    """Atomically publish a full-refresh mart using an isolated staging table.
+
+    Spark writes to the staging table first. The published table is replaced
+    inside a single PostgreSQL transaction, so a failed Spark job cannot
+    leave the existing mart empty or partially refreshed.
+    """
+    allowed_targets = {"mart_orders", "mart_items"}
+    if database != MARTS_DB or table_name not in allowed_targets:
+        raise ValueError(f"Unexpected mart target: {database}.{table_name}")
+
+    staging_table = f"_stg_{table_name}_{uuid4().hex[:12]}"
+    target_identifier = sql.Identifier("public", table_name)
+    staging_identifier = sql.Identifier("public", staging_table)
+
     conn = psycopg2.connect(
         host=POSTGRES_HOST,
         port=POSTGRES_PORT,
@@ -93,25 +109,74 @@ def truncate_table(database: str, table_name: str) -> None:
         user=POSTGRES_USER,
         password=POSTGRES_PASSWORD,
     )
-    conn.autocommit = True
+    conn.autocommit = False
+    staging_created = False
 
     try:
+        # Staging table must be committed before Spark JDBC (other DB sessions)
+        # can see and populate it. "INCLUDING ALL" preserves the column types,
+        # defaults and constraints of the destination table.
         with conn.cursor() as cur:
-            cur.execute(f"TRUNCATE TABLE {table_name};")
+            cur.execute(
+                sql.SQL("CREATE TABLE {} (LIKE {} INCLUDING ALL)").format(
+                    staging_identifier, target_identifier
+                )
+            )
+        conn.commit()
+        staging_created = True
+
+        # If this step fails, the published mart has not been touched.
+        (
+            df.write.format("jdbc")
+            .option("url", get_jdbc_url(database))
+            .option("dbtable", f"public.{staging_table}")
+            .option("user", POSTGRES_USER)
+            .option("password", POSTGRES_PASSWORD)
+            .option("driver", POSTGRES_DRIVER)
+            .mode("append")
+            .save()
+        )
+
+        # TRUNCATE and INSERT are in the SAME transaction. If INSERT fails,
+        # PostgreSQL rolls back TRUNCATE and keeps the old published data.
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT COUNT(*) FROM {}").format(staging_identifier)
+            )
+            row_count = cur.fetchone()[0]
+            if row_count == 0:
+                raise ValueError(
+                    f"Staging table for {table_name} is empty; "
+                    "refusing to clear the published mart"
+                )
+
+            cur.execute(sql.SQL("TRUNCATE TABLE {}").format(target_identifier))
+            cur.execute(
+                sql.SQL("INSERT INTO {} SELECT * FROM {}").format(
+                    target_identifier, staging_identifier
+                )
+            )
+            cur.execute(sql.SQL("DROP TABLE {}").format(staging_identifier))
+
+        conn.commit()
+        staging_created = False
+        print(f"Published {row_count} rows to {database}.{table_name}")
+
+    except Exception:
+        conn.rollback()
+        if staging_created:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL("DROP TABLE IF EXISTS {}").format(
+                            staging_identifier
+                        )
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                # Do not hide the original failure. If cleanup also fails,
+                # the uniquely named stage can be removed later.
+        raise
     finally:
         conn.close()
-
-
-def write_table(df: DataFrame, database: str, table_name: str) -> None:
-    truncate_table(database, table_name)
-
-    (
-        df.write.format("jdbc")
-        .option("url", get_jdbc_url(database))
-        .option("dbtable", table_name)
-        .option("user", POSTGRES_USER)
-        .option("password", POSTGRES_PASSWORD)
-        .option("driver", POSTGRES_DRIVER)
-        .mode("append")
-        .save()
-    )
