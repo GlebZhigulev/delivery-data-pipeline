@@ -231,16 +231,19 @@ def create_temp_tables(cur) -> None:
     cur.execute(
         """
         CREATE TEMP TABLE tmp_users (
+            load_seq bigserial,
             user_id integer,
             user_phone text
         ) ON COMMIT DROP;
 
         CREATE TEMP TABLE tmp_drivers (
+            load_seq bigserial,
             driver_id integer,
             driver_phone text
         ) ON COMMIT DROP;
 
         CREATE TEMP TABLE tmp_items (
+            load_seq bigserial,
             item_id integer,
             item_title text,
             item_category text,
@@ -248,6 +251,7 @@ def create_temp_tables(cur) -> None:
         ) ON COMMIT DROP;
 
         CREATE TEMP TABLE tmp_stores (
+            load_seq bigserial,
             store_id integer,
             store_name text,
             store_city text,
@@ -255,6 +259,7 @@ def create_temp_tables(cur) -> None:
         ) ON COMMIT DROP;
 
         CREATE TEMP TABLE tmp_orders (
+            load_seq bigserial,
             order_id integer,
             user_id integer,
             store_id integer,
@@ -270,6 +275,7 @@ def create_temp_tables(cur) -> None:
         ) ON COMMIT DROP;
 
         CREATE TEMP TABLE tmp_order_drivers (
+            load_seq bigserial,
             order_id integer,
             driver_id integer,
             delivered_at timestamp,
@@ -277,6 +283,7 @@ def create_temp_tables(cur) -> None:
         ) ON COMMIT DROP;
 
         CREATE TEMP TABLE tmp_order_items (
+            load_seq bigserial,
             order_id integer,
             item_id integer,
             item_quantity integer,
@@ -289,23 +296,41 @@ def create_temp_tables(cur) -> None:
 
 
 def merge_dimensions_and_orders(cur) -> None:
+    """Merge dimensions and orders once, after staging ALL input files.
+
+    Latest values follow sorted input-file order. The staging sequence number
+    makes tie-breaking deterministic when a business key appears more than once.
+    """
     cur.execute(
         """
         INSERT INTO users (user_id, user_phone)
         SELECT user_id, user_phone
-        FROM tmp_users
+        FROM (
+            SELECT DISTINCT ON (user_id) user_id, user_phone
+            FROM tmp_users ORDER BY user_id, load_seq DESC
+        ) AS src
+        WHERE TRUE
         ON CONFLICT (user_id) DO UPDATE
         SET user_phone = EXCLUDED.user_phone;
 
         INSERT INTO drivers (driver_id, driver_phone)
         SELECT driver_id, driver_phone
-        FROM tmp_drivers
+        FROM (
+            SELECT DISTINCT ON (driver_id) driver_id, driver_phone
+            FROM tmp_drivers ORDER BY driver_id, load_seq DESC
+        ) AS src
+        WHERE TRUE
         ON CONFLICT (driver_id) DO UPDATE
         SET driver_phone = EXCLUDED.driver_phone;
 
         INSERT INTO items (item_id, item_title, item_category, item_price)
         SELECT item_id, item_title, item_category, item_price
-        FROM tmp_items
+        FROM (
+            SELECT DISTINCT ON (item_id)
+                item_id, item_title, item_category, item_price
+            FROM tmp_items ORDER BY item_id, load_seq DESC
+        ) AS src
+        WHERE TRUE
         ON CONFLICT (item_id) DO UPDATE
         SET item_title = EXCLUDED.item_title,
             item_category = EXCLUDED.item_category,
@@ -313,40 +338,37 @@ def merge_dimensions_and_orders(cur) -> None:
 
         INSERT INTO stores (store_id, store_name, store_city, store_address)
         SELECT store_id, store_name, store_city, store_address
-        FROM tmp_stores
+        FROM (
+            SELECT DISTINCT ON (store_id)
+                store_id, store_name, store_city, store_address
+            FROM tmp_stores ORDER BY store_id, load_seq DESC
+        ) AS src
+        WHERE TRUE
         ON CONFLICT (store_id) DO UPDATE
         SET store_name = EXCLUDED.store_name,
             store_city = EXCLUDED.store_city,
             store_address = EXCLUDED.store_address;
 
         INSERT INTO orders (
-            order_id,
-            user_id,
-            store_id,
-            created_at,
-            paid_at,
-            delivery_started_at,
-            canceled_at,
-            payment_type,
-            order_cancellation_reason,
-            order_discount,
-            delivery_city,
-            delivery_address
+            order_id, user_id, store_id, created_at, paid_at,
+            delivery_started_at, canceled_at, payment_type,
+            order_cancellation_reason, order_discount,
+            delivery_city, delivery_address
         )
         SELECT
-            order_id,
-            user_id,
-            store_id,
-            created_at,
-            paid_at,
-            delivery_started_at,
-            canceled_at,
-            payment_type,
-            order_cancellation_reason,
-            order_discount,
-            delivery_city,
-            delivery_address
-        FROM tmp_orders
+            order_id, user_id, store_id, created_at, paid_at,
+            delivery_started_at, canceled_at, payment_type,
+            order_cancellation_reason, order_discount,
+            delivery_city, delivery_address
+        FROM (
+            SELECT DISTINCT ON (order_id)
+                order_id, user_id, store_id, created_at, paid_at,
+                delivery_started_at, canceled_at, payment_type,
+                order_cancellation_reason, order_discount,
+                delivery_city, delivery_address
+            FROM tmp_orders ORDER BY order_id, load_seq DESC
+        ) AS src
+        WHERE TRUE
         ON CONFLICT (order_id) DO UPDATE
         SET user_id = EXCLUDED.user_id,
             store_id = EXCLUDED.store_id,
@@ -364,6 +386,7 @@ def merge_dimensions_and_orders(cur) -> None:
 
 
 def replace_children(cur) -> None:
+    """Replace children for all staged orders, not separately per file."""
     cur.execute(
         """
         DELETE FROM order_items oi
@@ -375,34 +398,27 @@ def replace_children(cur) -> None:
         WHERE od.order_id = t.order_id;
 
         INSERT INTO order_drivers (
-            order_id,
-            driver_id,
-            delivered_at,
-            delivery_cost
+            order_id, driver_id, delivered_at, delivery_cost
         )
-        SELECT
-            order_id,
-            driver_id,
-            delivered_at,
-            delivery_cost
-        FROM tmp_order_drivers;
+        SELECT order_id, driver_id, delivered_at, delivery_cost
+        FROM (
+            SELECT DISTINCT ON (order_id, driver_id)
+                order_id, driver_id, delivered_at, delivery_cost
+            FROM tmp_order_drivers
+            ORDER BY order_id, driver_id, load_seq DESC
+        ) AS src;
 
         INSERT INTO order_items (
-            order_id,
-            item_id,
-            item_quantity,
-            item_canceled_quantity,
-            item_discount,
-            item_replaced_id
+            order_id, item_id, item_quantity,
+            item_canceled_quantity, item_discount, item_replaced_id
         )
         SELECT
-            order_id,
-            item_id,
-            item_quantity,
-            item_canceled_quantity,
-            item_discount,
-            item_replaced_id
-        FROM tmp_order_items;
+            order_id, item_id,
+            SUM(item_quantity),
+            SUM(item_canceled_quantity),
+            item_discount, item_replaced_id
+        FROM tmp_order_items
+        GROUP BY order_id, item_id, item_discount, item_replaced_id;
         """
     )
 
@@ -418,11 +434,12 @@ def load_all_parquet_to_core():
 
     try:
         with conn.cursor() as cur:
+            # Stage all Parquet files in one transaction. No committed core
+            # data is modified until every input file is successfully read.
+            create_temp_tables(cur)
             for file_path in files:
                 df = pd.read_parquet(file_path, columns=PARQUET_COLUMNS)
                 entities = build_entities(df)
-
-                create_temp_tables(cur)
 
                 copy_df_to_table(cur, entities["users"], "tmp_users", ["user_id", "user_phone"])
                 copy_df_to_table(cur, entities["drivers"], "tmp_drivers", ["driver_id", "driver_phone"])
@@ -467,9 +484,11 @@ def load_all_parquet_to_core():
                     ],
                 )
 
-                merge_dimensions_and_orders(cur)
-                replace_children(cur)
-                conn.commit()
+                print(f"Staged file: {file_path} ({len(df)} rows)")
+
+            merge_dimensions_and_orders(cur)
+            replace_children(cur)
+        conn.commit()
 
     except Exception:
         conn.rollback()
@@ -506,6 +525,7 @@ with DAG(
     start_date=datetime(2026, 1, 1),
     schedule=None,
     catchup=False,
+    max_active_runs=1,  # Prevent overlapping full-refresh runs of this DAG.
     tags=["etl", "core"],
 ) as dag:
     load_task = PythonOperator(
