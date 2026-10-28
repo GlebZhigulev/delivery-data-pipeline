@@ -434,8 +434,6 @@ FodyWeavers.xsd
 .env.*
 !.env.example
 
-# Local data
-data/raw/*.parquet
 
 # Credentials
 infra/pgadmin/pgpass
